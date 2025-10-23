@@ -58,3 +58,4 @@ dkms.conf
 testing/
 *.log
 compile_commands.json
+.cache
