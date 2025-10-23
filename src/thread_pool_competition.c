@@ -1,12 +1,12 @@
 /**
  * This module is used to create a thread pool. A thread pool will create a
  * given amount of threads then execute functions given from tpool_add_work().
- * It was implemeted for the mdu assignment in the course C Programming and Unix
- * (5DV088).
+ * It was implemeted for the mdu competition in the course C Programming and
+ * Unix (5DV088).
  *
- * @file thread_pool.c
+ * @file thread_pool_competition.c
  * @author Elias Svensson (c24esn@cs.umu.se)
- * @date 2025-10-10
+ * @date 2025-10-23
  */
 
 // --------------- Preprocessor directives ---------------------------------- //
@@ -25,6 +25,11 @@
 
 // --------------- Structs -------------------------------------------------- //
 
+/**
+ * @typedef worker_t
+ * @brief Local information to a thread
+ *
+ */
 typedef struct worker_t {
   tpool_t *restrict pool;
   stack_t *restrict job_stack;
@@ -37,14 +42,13 @@ struct tpool_t {
   sem_t new_job;
   sem_t done;
 
-  stack_t *restrict global_stack;
+  stack_t *global_stack;
   worker_t **workers;
-  pthread_t *restrict threads;
+  pthread_t *threads;
   atomic_int balance_queues;
 
   short nr_thrds;
   atomic_int nr_working_thrds;
-  atomic_bool error;
   atomic_bool stop;
 
   void *(*func)(void *);
@@ -52,14 +56,46 @@ struct tpool_t {
 
 // --------------- Declaration of internal functions ------------------------ //
 
+/**
+ * @brief Worker function for threads
+ *
+ * @param arg       a pointer to a struct of type worker_t
+ */
 void *worker(void *arg);
 
-void *tpool_steal_job(tpool_t *restrict pool, const short wid);
+/**
+ * @brief Try to steal a job from a worker. Will try all workers queues
+ *
+ * @param pool      a pointer to a struct of type pool_t
+ * @param wid       the id of the worker trying to steal
+ */
+static void *tpool_steal_job(tpool_t *restrict pool, const short wid);
 
+/**
+ * @brief See if there are any jobs left
+ *
+ * @param pool   a pointer to a struct of type pool_t
+ *
+ * @return      True if there are no jobs in any queue for POOL. Else false
+ */
 static bool tpool_no_jobs(const tpool_t *restrict pool);
 
+/**
+ * @brief Allocate the memory required for a worker and init all variables. The
+ * memory allocated needs to be freed by calling worker_destroy()
+ *
+ * @param     pool a pointer to a struct of type pool_t
+ * @param     id a unique id for this worker
+ *
+ * @return    a pointer to a struct of type worker_t
+ */
 static worker_t *worker_create(tpool_t *restrict pool, const short id);
 
+/**
+ * @brief Deallocate all memory allocated for a worker
+ *
+ * @param worker    a pointer to a struct of type worker_t
+ */
 static void worker_destroy(worker_t *restrict worker);
 
 // --------------- Thread local vars ---------------------------------------- //
@@ -81,7 +117,6 @@ tpool_t *tpool_create(const short nr_threads, void *(*func)(void *)) {
   pthread_mutex_init(&pool->access_pool, NULL);
   sem_init(&pool->done, 0, 0);
   sem_init(&pool->new_job, 0, 0);
-  atomic_init(&pool->error, false);
   atomic_init(&pool->stop, false);
   atomic_init(&pool->nr_working_thrds, 0);
   atomic_init(&pool->balance_queues, 0);
@@ -210,10 +245,7 @@ void *worker(void *arg) {
     //     }
 
     if (job) {
-      void *status = p->func(job);
-      if (status) {
-        atomic_store(&p->error, true);
-      }
+      p->func(job);
 #ifdef DEBUG
       fprintf(stderr, "[~] %d found work\n", thread_id);
       ++jobs_done;
