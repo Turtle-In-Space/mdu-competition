@@ -33,12 +33,10 @@
 typedef struct worker_t {
   tpool_t *restrict pool;
   stack_t *restrict job_stack;
-  sem_t new_job;
   short id;
 } worker_t;
 
 struct tpool_t {
-  pthread_mutex_t access_pool;
   sem_t new_job;
   sem_t done;
 
@@ -78,7 +76,7 @@ static void *tpool_steal_job(tpool_t *restrict pool, const short wid);
  *
  * @return      True if there are no jobs in any queue for POOL. Else false
  */
-static bool tpool_no_jobs(const tpool_t *restrict pool);
+static bool tpool_no_jobs(tpool_t *restrict pool);
 
 /**
  * @brief Allocate the memory required for a worker and init all variables. The
@@ -114,7 +112,6 @@ atomic_int tot_stolen_jobs;
 tpool_t *tpool_create(const short nr_threads, void *(*func)(void *)) {
   tpool_t *pool = malloc(sizeof(tpool_t));
 
-  pthread_mutex_init(&pool->access_pool, NULL);
   sem_init(&pool->done, 0, 0);
   sem_init(&pool->new_job, 0, 0);
   atomic_init(&pool->stop, false);
@@ -158,7 +155,7 @@ void tpool_destroy(tpool_t *pool) {
 
     // wake all threads
     for (short i = 0; i < pool->nr_thrds; i++) {
-      sem_post(&pool->workers[i]->new_job);
+      sem_post(&pool->new_job);
     }
 
     // kill threads
@@ -174,7 +171,6 @@ void tpool_destroy(tpool_t *pool) {
 
   sem_destroy(&pool->done);
   sem_destroy(&pool->new_job);
-  pthread_mutex_destroy(&pool->access_pool);
 
   free(pool);
 }
@@ -189,7 +185,7 @@ void tpool_add_work(tpool_t *restrict pool, void *restrict arg) {
   fprintf(stderr, "[*] added work to: %d\n", w->id);
 #endif /* if DEBUG */
 
-  sem_post(&pool->workers[worker]->new_job);
+  sem_post(&pool->new_job);
 }
 
 void tpool_wait(tpool_t *restrict pool) {
@@ -212,52 +208,36 @@ void *worker(void *arg) {
   thread_id = w->id;
 
   while (!atomic_load(&p->stop)) {
-    void *job = NULL;
-
-    if (stack_is_empty(w->job_stack)) {
-      job = tpool_steal_job(p, w->id);
-
-      if (!job) {
-        sem_wait(&w->new_job);
-      }
-    }
-    atomic_fetch_add(&p->nr_working_thrds, 1);
+#ifdef DEBUG
+    int tmp;
+    sem_getvalue(&p->new_job, &tmp);
+    fprintf(stderr, "[~] tpool_worker: %d waiting with %d jobs\n", thread_id,
+            tmp);
+#endif /* ifdef DEBUG */
+    sem_wait(&p->new_job);
 
     if (atomic_load(&p->stop)) {
       break;
     }
 
+    atomic_fetch_add(&p->nr_working_thrds, 1);
+
+    void *job = stack_pop(w->job_stack);
+
     if (!job) {
-#ifdef DEBUG
-      fprintf(stderr, "[*] %d tries self queue\n", thread_id);
-#endif /* ifdef DEBUG */
-      job = stack_pop(w->job_stack);
+      // job = tpool_steal_job(p, w->id);
     }
 
-    //     if (!job) { // Try stealing from other workers
-    //       job = tpool_steal_job(p, w->id);
-    // #ifdef DEBUG
-    //       fprintf(stderr, "[*] %d will now steal\n", thread_id);
-    //       if (job) {
-    //         atomic_fetch_add(&tot_stolen_jobs, 1);
-    //       }
-    // #endif /* ifdef DEBUG */
-    //     }
+    if (!job) {
+      job = stack_pop(p->global_stack);
+    }
 
     if (job) {
       p->func(job);
-#ifdef DEBUG
-      fprintf(stderr, "[~] %d found work\n", thread_id);
-      ++jobs_done;
-      atomic_fetch_add(&tot_jobs, 1);
-#endif /* ifdef DEBUG */
-    } else {
-#ifdef DEBUG
-      fprintf(stderr, "[!] %d found no work\n", thread_id);
-#endif /* ifdef */
     }
 
     atomic_fetch_sub(&p->nr_working_thrds, 1);
+
     // Only signal done if no worker is active and all stacks empty
     if (atomic_load(&p->nr_working_thrds) == 0 && tpool_no_jobs(p)) {
 #ifdef DEBUG
@@ -268,7 +248,7 @@ void *worker(void *arg) {
   }
 
 #ifdef DEBUG
-  fprintf(stderr, "%d did %d jobs\n", thread_id, jobs_done);
+  // fprintf(stderr, "%d did %d jobs\n", thread_id, jobs_done);
 #endif /* ifdef DEBUG */
   return NULL;
 }
@@ -284,7 +264,7 @@ void *tpool_steal_job(tpool_t *restrict pool, const short wid) {
   return stack_pop(target->job_stack);
 }
 
-static bool tpool_no_jobs(const tpool_t *restrict pool) {
+static bool tpool_no_jobs(tpool_t *restrict pool) {
   // Check global queue
   if (!stack_is_empty(pool->global_stack)) {
     // fprintf(stderr, "glob");
@@ -295,7 +275,7 @@ static bool tpool_no_jobs(const tpool_t *restrict pool) {
   for (short i = 0; i < pool->nr_thrds; i++) {
     if (!stack_is_empty(pool->workers[i]->job_stack)) {
       // fprintf(stderr, "%d", i);
-      sem_post(&pool->workers[i]->new_job);
+      sem_post(&pool->new_job);
       return false;
     }
   }
@@ -306,7 +286,6 @@ static bool tpool_no_jobs(const tpool_t *restrict pool) {
 static worker_t *worker_create(tpool_t *restrict pool, const short id) {
   worker_t *worker = malloc(sizeof(worker_t));
 
-  sem_init(&worker->new_job, 0, 0);
   worker->pool = pool;
   worker->id = id;
   worker->job_stack = stack_create();
