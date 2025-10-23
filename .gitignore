@@ -59,3 +59,4 @@ testing/
 *.log
 compile_commands.json
 .cache
+mdu_competition
