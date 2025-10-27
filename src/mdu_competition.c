@@ -197,7 +197,6 @@ static inline char *append_filename(const char *restrict f1,
   memcpy(new_file + base_len, f2, name_len);
   new_file[base_len + name_len] = '\0';
 
-  // snprintf(new_file, tot_len, "%s/%s", f1, f2);
 #ifdef DEBUG
   if (name_len > atomic_load(&max_name_len)) {
     atomic_store(&max_name_len, name_len);
