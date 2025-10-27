@@ -119,9 +119,6 @@ int main(int argc, char *argv[]) {
   for (short i = 0; opts->targets[i] != NULL; i++) {
     atomic_init(&sum, 0);
 
-#ifdef DEBUG
-    fprintf(stderr, "sum file: %s\n", opts->targets[i]);
-#endif /* ifdef DEBUG */
     struct stat filestat;
     lstat(opts->targets[i], &filestat);
     atomic_fetch_add(&sum, filestat.st_blocks);
@@ -206,7 +203,6 @@ static inline char *append_filename(const char *restrict f1,
     atomic_store(&max_name_len, name_len);
     max_name = strdup(f2);
   }
-
 #endif /* ifdef DEBUG */
 
   return new_file;
