@@ -176,14 +176,11 @@ void tpool_destroy(tpool_t *pool) {
 }
 
 void tpool_add_work(tpool_t *restrict pool, void *restrict arg) {
-  const short worker =
-      atomic_fetch_add(&pool->balance_queues, 1) % pool->nr_thrds;
-  worker_t *w = pool->workers[worker];
-
-  stack_push(w->job_stack, arg);
-#ifdef DEBUG
-  fprintf(stderr, "[*] added work to: %d\n", w->id);
-#endif /* if DEBUG */
+  if (thread_id != -1) {
+    stack_push(pool->workers[thread_id]->job_stack, arg);
+  } else {
+    stack_push(pool->global_stack, arg);
+  }
 
   sem_post(&pool->new_job);
 }
@@ -225,7 +222,7 @@ void *worker(void *arg) {
     void *job = stack_pop(w->job_stack);
 
     if (!job) {
-      // job = tpool_steal_job(p, w->id);
+      job = tpool_steal_job(p, w->id);
     }
 
     if (!job) {
@@ -234,6 +231,10 @@ void *worker(void *arg) {
 
     if (job) {
       p->func(job);
+
+#ifdef DEBUG
+      atomic_fetch_add(&tot_jobs, 1);
+#endif /* ifdef DEBUG */
     }
 
     atomic_fetch_sub(&p->nr_working_thrds, 1);
@@ -254,14 +255,21 @@ void *worker(void *arg) {
 }
 
 void *tpool_steal_job(tpool_t *restrict pool, const short wid) {
-  short tid = atomic_load(&pool->balance_queues) % pool->nr_thrds;
-  if (tid == wid) {
-    tid = (tid + 1) % pool->nr_thrds;
+  void *job = NULL;
+
+  for (short i = 0; i < pool->nr_thrds; i++) {
+    // offset with wid to not have all threads steal from 0
+    short target = (i + wid) % pool->nr_thrds;
+    job = stack_pop(pool->workers[target]->job_stack);
+    if (job) {
+#ifdef DEBUG
+      atomic_fetch_add(&tot_stolen_jobs, 1);
+#endif /* ifdef DEBUG */
+      break;
+    }
   }
 
-  worker_t *target = pool->workers[tid];
-  // try to steal job from target
-  return stack_pop(target->job_stack);
+  return job;
 }
 
 static bool tpool_no_jobs(tpool_t *restrict pool) {
